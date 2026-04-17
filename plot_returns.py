@@ -51,11 +51,9 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.0
     df = df.with_columns(pl.col('date').str.to_datetime('%Y-%m-%d %H:%M:%S'))
     df = df.unique(subset=['date'], keep='first').sort('date')
 
-    # RTH filter: 9:30 to 15:30 (Webull forced liquidation)
     df = df.filter(
         ((pl.col('date').dt.hour() == 9) & (pl.col('date').dt.minute() >= 30)) |
-        ((pl.col('date').dt.hour() >= 10) & (pl.col('date').dt.hour() < 15)) |
-        ((pl.col('date').dt.hour() == 15) & (pl.col('date').dt.minute() <= 30))
+        ((pl.col('date').dt.hour() >= 10) & (pl.col('date').dt.hour() <= 15))
     )
     df = df.with_columns(pl.col('date').dt.date().alias('day'))
 
@@ -81,9 +79,10 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.0
     vwaps = df['vwap'].fill_null(0.0).to_numpy()
     atrs = df['atr'].fill_null(0.0).to_numpy()
     dates_int = df['day'].cast(pl.Int32).to_numpy()
+    times_hm = (df['date'].dt.hour() * 100 + df['date'].dt.minute()).to_numpy()
 
     @numba.njit
-    def calc_vwap_atr(closes, vwaps, atrs, dates, multiplier, thresh):
+    def calc_vwap_atr(closes, vwaps, atrs, dates, times, multiplier, thresh):
         n = len(closes)
         pos_signal = np.zeros(n, dtype=np.int32)
 
@@ -99,6 +98,13 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.0
             curr_close = closes[i]
             curr_vwap = vwaps[i]
             curr_atr = atrs[i]
+            curr_time = times[i]
+
+            # The webull 15:30 logic
+            if curr_time > 1530:
+                current_trend = 0
+                pos_signal[i] = 0
+                continue
 
             if current_trend == 0:
                 if curr_close > curr_vwap * (1 + thresh):
@@ -127,7 +133,7 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.0
 
         return pos_signal
 
-    signal_raw = calc_vwap_atr(closes, vwaps, atrs, dates_int, atr_mult, threshold)
+    signal_raw = calc_vwap_atr(closes, vwaps, atrs, dates_int, times_hm, atr_mult, threshold)
 
     df = df.with_columns(signal=pl.Series('signal', signal_raw))
     df = df.with_columns(pos=pl.col('signal').shift(1).fill_null(0).over('day'))
@@ -140,10 +146,48 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.0
 
     df_daily = df.group_by('day').agg([
         pl.col('equity').last().alias('equity'),
-        pl.col('close').last().alias('close'),
-        pl.col('open').first().alias('first_open')
+        pl.col('close').last().alias('close')
     ])
     df_daily = df_daily.sort('day')
+
+    # Calculate Buy and Hold properly. If the historical data is already adjusted for splits,
+    # we don't need any complex multiplier logic. The return is simply (Close / Initial_Open) - 1
+    # However, because the dataset spans overnight periods, we must link the daily continuous returns
+    # instead of doing a naive absolute ratio, to avoid gaps destroying the curve if unadjusted.
+
+    df_day_open = df.group_by('day').agg(pl.col('open').first().alias('first_open')).sort('day')
+    df_daily = df_daily.join(df_day_open, on='day', how='left')
+
+    # Calculate compounded daily returns
+    # Daily return = (Close of Day) / (Open of Day)
+    # Overnight return = (Open of Day T) / (Close of Day T-1)
+
+    bnh_equity = np.zeros(len(df_daily))
+    bnh_equity[0] = 25000.0 * (df_daily['close'][0] / df_daily['first_open'][0])
+
+    for i in range(1, len(df_daily)):
+        curr_open = df_daily['first_open'][i]
+        curr_close = df_daily['close'][i]
+        prev_close = df_daily['close'][i-1]
+
+        # Continuous compounding formula: New_Equity = Prev_Equity * (Curr_Close / Prev_Close)
+        # If the data has an artificial gap due to a split, (curr_open / prev_close) will be absurd.
+        # We can just ignore the overnight gap entirely, assuming we held the stock and its true
+        # value didn't change just because of a split. Thus, the daily change is just intraday return.
+
+        # If we assume we just earn the intraday return each day (this is "Buy & Hold Intraday" technically).
+        # Let's check what causes the Nov 2025 anomaly. If it's a massive unadjusted gap, we can just
+        # link the intraday returns + normal overnight returns.
+        # A normal overnight return is between 0.95 and 1.05.
+
+        overnight_ratio = curr_open / prev_close
+        if overnight_ratio < 0.7 or overnight_ratio > 1.3:
+            # It's an artificial split. We neutralize the overnight gap.
+            overnight_ratio = 1.0
+
+        bnh_equity[i] = bnh_equity[i-1] * overnight_ratio * (curr_close / curr_open)
+
+    df_daily = df_daily.with_columns(bnh_equity=pl.Series('bnh_equity', bnh_equity))
 
     return df_daily
 
@@ -157,8 +201,7 @@ if __name__ == "__main__":
     strategy_returns = [(x / initial_cap - 1) * 100 for x in df_daily['equity'].to_list()]
 
     # Buy and Hold Returns
-    first_open_price = df_daily['first_open'][0]
-    bnh_returns = [(close_price / first_open_price - 1) * 100 for close_price in df_daily['close'].to_list()]
+    bnh_returns = [(x / initial_cap - 1) * 100 for x in df_daily['bnh_equity'].to_list()]
 
     plt.figure(figsize=(10, 6))
     plt.plot(dates, strategy_returns, label='TQQQ VWAP+ATR (Webull 15:30)', color='blue')
