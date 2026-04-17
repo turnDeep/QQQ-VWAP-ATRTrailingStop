@@ -51,9 +51,11 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.0
     df = df.with_columns(pl.col('date').str.to_datetime('%Y-%m-%d %H:%M:%S'))
     df = df.unique(subset=['date'], keep='first').sort('date')
 
+    # RTH filter: 9:30 to 15:30 (Webull forced liquidation)
     df = df.filter(
         ((pl.col('date').dt.hour() == 9) & (pl.col('date').dt.minute() >= 30)) |
-        ((pl.col('date').dt.hour() >= 10) & (pl.col('date').dt.hour() <= 15))
+        ((pl.col('date').dt.hour() >= 10) & (pl.col('date').dt.hour() < 15)) |
+        ((pl.col('date').dt.hour() == 15) & (pl.col('date').dt.minute() <= 30))
     )
     df = df.with_columns(pl.col('date').dt.date().alias('day'))
 
@@ -136,7 +138,11 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.0
     equity_curve = simulate_trading_with_equity_curve(dates_int, opens, closes, pos)
     df = df.with_columns(equity=pl.Series('equity', equity_curve))
 
-    df_daily = df.group_by('day').agg(pl.col('equity').last())
+    df_daily = df.group_by('day').agg([
+        pl.col('equity').last().alias('equity'),
+        pl.col('close').last().alias('close'),
+        pl.col('open').first().alias('first_open')
+    ])
     df_daily = df_daily.sort('day')
 
     return df_daily
@@ -146,11 +152,19 @@ if __name__ == "__main__":
 
     initial_cap = 25000.0
     dates = df_daily['day'].to_list()
-    returns = [(x / initial_cap - 1) * 100 for x in df_daily['equity'].to_list()]
+
+    # Strategy Returns
+    strategy_returns = [(x / initial_cap - 1) * 100 for x in df_daily['equity'].to_list()]
+
+    # Buy and Hold Returns
+    first_open_price = df_daily['first_open'][0]
+    bnh_returns = [(close_price / first_open_price - 1) * 100 for close_price in df_daily['close'].to_list()]
 
     plt.figure(figsize=(10, 6))
-    plt.plot(dates, returns, label='TQQQ VWAP+ATR Strategy (Max Return Profile)', color='blue')
-    plt.title('Total Return (%) Over Time')
+    plt.plot(dates, strategy_returns, label='TQQQ VWAP+ATR (Webull 15:30)', color='blue')
+    plt.plot(dates, bnh_returns, label='TQQQ Buy & Hold', color='orange', alpha=0.75, linestyle='--')
+
+    plt.title('Total Return (%) Over Time: Strategy vs Buy & Hold')
     plt.xlabel('Date')
     plt.ylabel('Total Return (%)')
     plt.grid(True)
