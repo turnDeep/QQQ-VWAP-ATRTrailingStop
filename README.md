@@ -18,3 +18,11 @@ Run the improved logic using:
 ```bash
 python3 calculate_improved_return.py
 ```
+
+## ATR Trailing Stop Strategy
+The file `atr_trailing_stop.py` incorporates an ATR (Average True Range) trailing stop approach combined with a VWAP entry filter. It calculates a dynamic stop loss that tightens around the price during a trend to lock in profits, achieving +201.23% return on the TQQQ dataset.
+
+Run the strategy using:
+```bash
+python3 atr_trailing_stop.py
+```
