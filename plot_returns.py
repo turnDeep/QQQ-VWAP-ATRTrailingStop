@@ -4,27 +4,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 @numba.njit
-def simulate_trading_with_equity_curve(dates, opens, closes, pos, initial_capital=25000.0, commission=0.0005, max_daily_loss=0.04):
+def simulate_trading_with_equity_curve(dates, opens, closes, pos, initial_capital=25000.0, commission=0.0005):
     capital = initial_capital
     shares = 0.0
     curr_pos = 0
     n = len(opens)
     equity_curve = np.zeros(n)
 
-    daily_start_capital = capital
-    stopped_out_for_day = False
-
     for i in range(n):
-        if i > 0 and dates[i] != dates[i-1]:
-            daily_start_capital = capital
-            stopped_out_for_day = False
-
         target_pos = pos[i]
-        if i == n - 1 or dates[i+1] != dates[i] or stopped_out_for_day:
+        if i == n - 1 or dates[i+1] != dates[i]:
             target_pos = 0
 
         if target_pos != curr_pos:
-            price = closes[i] if (target_pos == 0 and (i == n-1 or dates[i+1] != dates[i] or stopped_out_for_day)) else opens[i]
+            price = closes[i] if (target_pos == 0 and (i == n-1 or dates[i+1] != dates[i])) else opens[i]
             if curr_pos == 1:
                 capital += shares * price
                 capital -= shares * commission
@@ -49,23 +42,18 @@ def simulate_trading_with_equity_curve(dates, opens, closes, pos, initial_capita
         elif curr_pos == -1:
             current_equity -= shares * closes[i]
 
-        # Stop trading if equity drops below 4% for the day
-        if not stopped_out_for_day and current_equity < daily_start_capital * (1 - max_daily_loss):
-            stopped_out_for_day = True
-
         equity_curve[i] = current_equity
 
     return equity_curve
 
-def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=15.0, threshold=0.003, tp_pct=0.01):
+def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.003):
     df = pl.read_csv(file_path)
     df = df.with_columns(pl.col('date').str.to_datetime('%Y-%m-%d %H:%M:%S'))
     df = df.unique(subset=['date'], keep='first').sort('date')
 
     df = df.filter(
         ((pl.col('date').dt.hour() == 9) & (pl.col('date').dt.minute() >= 30)) |
-        ((pl.col('date').dt.hour() >= 10) & (pl.col('date').dt.hour() < 15)) |
-        ((pl.col('date').dt.hour() == 15) & (pl.col('date').dt.minute() <= 30))
+        ((pl.col('date').dt.hour() >= 10) & (pl.col('date').dt.hour() <= 15))
     )
     df = df.with_columns(pl.col('date').dt.date().alias('day'))
 
@@ -91,67 +79,53 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=15.0, threshold=0.
     vwaps = df['vwap'].fill_null(0.0).to_numpy()
     atrs = df['atr'].fill_null(0.0).to_numpy()
     dates_int = df['day'].cast(pl.Int32).to_numpy()
-    times_hm = (df['date'].dt.hour() * 100 + df['date'].dt.minute()).to_numpy()
 
     @numba.njit
-    def calc_vwap_atr(closes, vwaps, atrs, dates, times, multiplier, thresh, tp):
+    def calc_vwap_atr(closes, vwaps, atrs, dates, multiplier, thresh):
         n = len(closes)
         pos_signal = np.zeros(n, dtype=np.int32)
 
         current_trend = 0
         current_stop = 0.0
-        entry_price = 0.0
-        daily_open = 0.0
 
         for i in range(1, n):
             if dates[i] != dates[i-1]:
                 current_trend = 0
                 pos_signal[i] = 0
-                daily_open = closes[i]
                 continue
 
             curr_close = closes[i]
             curr_vwap = vwaps[i]
             curr_atr = atrs[i]
-            curr_time = times[i]
-
-            allow_entry = not (curr_time >= 1200 and curr_time < 1400)
-
-            # Trend filter
-            allow_long = allow_entry and (curr_close >= daily_open * 0.985)
-            allow_short = allow_entry and (curr_close <= daily_open * 1.015)
 
             if current_trend == 0:
-                if allow_long and curr_close > curr_vwap * (1 + thresh):
+                if curr_close > curr_vwap * (1 + thresh):
                     current_trend = 1
                     current_stop = curr_close - multiplier * curr_atr
-                    entry_price = curr_close
-                elif allow_short and curr_close < curr_vwap * (1 - thresh):
+                elif curr_close < curr_vwap * (1 - thresh):
                     current_trend = -1
                     current_stop = curr_close + multiplier * curr_atr
-                    entry_price = curr_close
             else:
-                if current_trend == 1 and curr_close >= entry_price * (1 + tp):
-                    current_trend = 0
-                elif current_trend == -1 and curr_close <= entry_price * (1 - tp):
-                    current_trend = 0
-                else:
-                    if current_trend == 1:
-                        new_stop = curr_close - multiplier * curr_atr
-                        current_stop = max(current_stop, new_stop)
-                        if curr_close < current_stop:
-                            current_trend = 0
-                    elif current_trend == -1:
-                        new_stop = curr_close + multiplier * curr_atr
-                        current_stop = min(current_stop, new_stop)
-                        if curr_close > current_stop:
-                            current_trend = 0
+                if current_trend == 1:
+                    new_stop = curr_close - multiplier * curr_atr
+                    current_stop = max(current_stop, new_stop)
+                    if curr_close < current_stop:
+                        current_trend = -1 if curr_close < curr_vwap * (1 - thresh) else 0
+                        if current_trend == -1:
+                            current_stop = curr_close + multiplier * curr_atr
+                elif current_trend == -1:
+                    new_stop = curr_close + multiplier * curr_atr
+                    current_stop = min(current_stop, new_stop)
+                    if curr_close > current_stop:
+                        current_trend = 1 if curr_close > curr_vwap * (1 + thresh) else 0
+                        if current_trend == 1:
+                            current_stop = curr_close - multiplier * curr_atr
 
             pos_signal[i] = current_trend
 
         return pos_signal
 
-    signal_raw = calc_vwap_atr(closes, vwaps, atrs, dates_int, times_hm, atr_mult, threshold, tp_pct)
+    signal_raw = calc_vwap_atr(closes, vwaps, atrs, dates_int, atr_mult, threshold)
 
     df = df.with_columns(signal=pl.Series('signal', signal_raw))
     df = df.with_columns(pos=pl.col('signal').shift(1).fill_null(0).over('day'))
@@ -175,7 +149,7 @@ if __name__ == "__main__":
     returns = [(x / initial_cap - 1) * 100 for x in df_daily['equity'].to_list()]
 
     plt.figure(figsize=(10, 6))
-    plt.plot(dates, returns, label='TQQQ VWAP+ATR (Trend Filter + 4% Max Daily Loss)', color='red')
+    plt.plot(dates, returns, label='TQQQ VWAP+ATR Strategy (Max Return Profile)', color='blue')
     plt.title('Total Return (%) Over Time')
     plt.xlabel('Date')
     plt.ylabel('Total Return (%)')

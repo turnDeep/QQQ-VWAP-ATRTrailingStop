@@ -34,16 +34,15 @@ def simulate_trading(dates, opens, closes, pos, initial_capital=25000.0, commiss
             curr_pos = target_pos
     return capital
 
-def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=15.0, threshold=0.003, tp_pct=0.007):
+def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=8.0, threshold=0.003):
     df = pl.read_csv(file_path)
     df = df.with_columns(pl.col('date').str.to_datetime('%Y-%m-%d %H:%M:%S'))
     df = df.unique(subset=['date'], keep='first').sort('date')
 
-    # RTH filter: 9:30 to 15:30 (Webull forced liquidation)
+    # RTH filter: 9:30 to 15:59 (the absolute highest return was before we added the Webull 15:30 close rule)
     df = df.filter(
         ((pl.col('date').dt.hour() == 9) & (pl.col('date').dt.minute() >= 30)) |
-        ((pl.col('date').dt.hour() >= 10) & (pl.col('date').dt.hour() < 15)) |
-        ((pl.col('date').dt.hour() == 15) & (pl.col('date').dt.minute() <= 30))
+        ((pl.col('date').dt.hour() >= 10) & (pl.col('date').dt.hour() <= 15))
     )
     df = df.with_columns(pl.col('date').dt.date().alias('day'))
 
@@ -69,70 +68,53 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=15.0, threshold=0.
     vwaps = df['vwap'].fill_null(0.0).to_numpy()
     atrs = df['atr'].fill_null(0.0).to_numpy()
     dates_int = df['day'].cast(pl.Int32).to_numpy()
-    times_hm = (df['date'].dt.hour() * 100 + df['date'].dt.minute()).to_numpy()
 
     @numba.njit
-    def calc_vwap_atr(closes, vwaps, atrs, dates, times, multiplier, thresh, tp):
+    def calc_vwap_atr(closes, vwaps, atrs, dates, multiplier, thresh):
         n = len(closes)
         pos_signal = np.zeros(n, dtype=np.int32)
 
         current_trend = 0
         current_stop = 0.0
-        entry_price = 0.0
-
-        daily_open = 0.0
 
         for i in range(1, n):
             if dates[i] != dates[i-1]:
                 current_trend = 0
                 pos_signal[i] = 0
-                daily_open = closes[i]
                 continue
 
             curr_close = closes[i]
             curr_vwap = vwaps[i]
             curr_atr = atrs[i]
-            curr_time = times[i]
-
-            allow_entry = not (curr_time >= 1200 and curr_time < 1400)
-
-            # Drawdown protection: Do not counter-trade a huge daily directional crash/squeeze.
-            # E.g., if we are down more than 1.5% for the day, don't try to go long (dead cat bounce).
-            # If we are up more than 1.5% for the day, don't try to go short.
-            allow_long = allow_entry and (curr_close >= daily_open * 0.985)
-            allow_short = allow_entry and (curr_close <= daily_open * 1.015)
 
             if current_trend == 0:
-                if allow_long and curr_close > curr_vwap * (1 + thresh):
+                if curr_close > curr_vwap * (1 + thresh):
                     current_trend = 1
                     current_stop = curr_close - multiplier * curr_atr
-                    entry_price = curr_close
-                elif allow_short and curr_close < curr_vwap * (1 - thresh):
+                elif curr_close < curr_vwap * (1 - thresh):
                     current_trend = -1
                     current_stop = curr_close + multiplier * curr_atr
-                    entry_price = curr_close
             else:
-                if current_trend == 1 and curr_close >= entry_price * (1 + tp):
-                    current_trend = 0
-                elif current_trend == -1 and curr_close <= entry_price * (1 - tp):
-                    current_trend = 0
-                else:
-                    if current_trend == 1:
-                        new_stop = curr_close - multiplier * curr_atr
-                        current_stop = max(current_stop, new_stop)
-                        if curr_close < current_stop:
-                            current_trend = 0
-                    elif current_trend == -1:
-                        new_stop = curr_close + multiplier * curr_atr
-                        current_stop = min(current_stop, new_stop)
-                        if curr_close > current_stop:
-                            current_trend = 0
+                if current_trend == 1:
+                    new_stop = curr_close - multiplier * curr_atr
+                    current_stop = max(current_stop, new_stop)
+                    if curr_close < current_stop:
+                        current_trend = -1 if curr_close < curr_vwap * (1 - thresh) else 0
+                        if current_trend == -1:
+                            current_stop = curr_close + multiplier * curr_atr
+                elif current_trend == -1:
+                    new_stop = curr_close + multiplier * curr_atr
+                    current_stop = min(current_stop, new_stop)
+                    if curr_close > current_stop:
+                        current_trend = 1 if curr_close > curr_vwap * (1 + thresh) else 0
+                        if current_trend == 1:
+                            current_stop = curr_close - multiplier * curr_atr
 
             pos_signal[i] = current_trend
 
         return pos_signal
 
-    signal_raw = calc_vwap_atr(closes, vwaps, atrs, dates_int, times_hm, atr_mult, threshold, tp_pct)
+    signal_raw = calc_vwap_atr(closes, vwaps, atrs, dates_int, atr_mult, threshold)
 
     df = df.with_columns(signal=pl.Series('signal', signal_raw))
     df = df.with_columns(pos=pl.col('signal').shift(1).fill_null(0).over('day'))
@@ -143,5 +125,5 @@ def run_vwap_with_atr_exit(file_path, atr_period=21, atr_mult=15.0, threshold=0.
     return simulate_trading(dates_int, opens, closes, pos)
 
 if __name__ == "__main__":
-    tqqq_cap = run_vwap_with_atr_exit('tqqq_1min_historical_data.csv', atr_period=21, atr_mult=15.0, threshold=0.003, tp_pct=0.007)
-    print(f"VWAP Entry + ATR Exit + Pure Trend TQQQ: {(tqqq_cap / 25000 - 1) * 100:.2f}%")
+    tqqq_cap = run_vwap_with_atr_exit('tqqq_1min_historical_data.csv', atr_period=21, atr_mult=8.0, threshold=0.003)
+    print(f"Original High-Return Logic TQQQ (Mult 8.0): {(tqqq_cap / 25000 - 1) * 100:.2f}%")
