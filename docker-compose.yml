@@ -15,7 +15,7 @@ services:
       - stallion-data:/app/data
       - stallion-reports:/app/reports
     healthcheck:
-      test: ["CMD", "python", "-m", "stallion.watchdog"]
+      test: ["CMD", "python", "-m", "core.watchdog"]
       interval: 60s
       timeout: 15s
       retries: 3

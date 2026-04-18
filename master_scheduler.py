@@ -13,9 +13,9 @@ import pandas as pd
 import pytz
 import schedule
 
-from stallion.config import load_settings
-from stallion.discord_notifier import DiscordNotifier
-from stallion.storage import SQLiteParquetStore
+from core.config import load_settings
+from core.discord_notifier import DiscordNotifier
+from core.storage import SQLiteParquetStore
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
