@@ -797,13 +797,17 @@ def run_live_trader(settings: Settings | None = None) -> None:
             continue
 
         try:
-            tqqq_ind = calculate_intraday_indicators(tqqq_df, atr_period=9)
+            tqqq_ind = calculate_intraday_indicators(tqqq_df, atr_period=settings.runtime.vwap_atr_period)
             closes = tqqq_ind['close'].fillna(method='ffill').to_numpy()
             vwaps = tqqq_ind['vwap'].fillna(0.0).to_numpy()
             atrs = tqqq_ind['atr'].fillna(0.0).to_numpy()
             dates_int = tqqq_ind['day'].astype(str).str.replace('-', '').astype(int).to_numpy()
             
-            signal_raw = calc_vwap_atr(closes, vwaps, atrs, dates_int, 27.15193, 0.0006317)
+            signal_raw = calc_vwap_atr(
+                closes, vwaps, atrs, dates_int, 
+                settings.runtime.vwap_atr_mult, 
+                settings.runtime.vwap_threshold
+            )
             # Standard delay execution (wait 1 minute for close to seal)
             pos_signal = shift_signal_over_day(signal_raw, dates_int)
             latest_signal = pos_signal[-1]

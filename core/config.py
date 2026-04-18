@@ -36,6 +36,12 @@ class RuntimeConfig:
     watchlist_cv_embargo_sessions: int = 1
     max_positions: int = 4
     fractional_shares_enabled: bool = False
+    
+    # VWAP Target Parameters
+    vwap_atr_period: int = 9
+    vwap_atr_mult: float = 27.15193
+    vwap_threshold: float = 0.0006317
+    
     min_minutes_from_open: int = 5
     max_minutes_from_open: int = 90
     threshold_floor: float = 0.55
