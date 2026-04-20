@@ -800,7 +800,7 @@ def run_live_trader(settings: Settings | None = None) -> None:
             # DB stores bars with 'ts' column; rename to 'timestamp' for indicator calc
             tqqq_df = tqqq_df.rename(columns={'ts': 'timestamp'}) if 'ts' in tqqq_df.columns else tqqq_df
             tqqq_ind = calculate_intraday_indicators(tqqq_df, atr_period=settings.runtime.vwap_atr_period)
-            closes = tqqq_ind['close'].fillna(method='ffill').to_numpy()
+            closes = tqqq_ind['close'].ffill().to_numpy()
             vwaps = tqqq_ind['vwap'].fillna(0.0).to_numpy()
             atrs = tqqq_ind['atr'].fillna(0.0).to_numpy()
             dates_int = tqqq_ind['day'].astype(str).str.replace('-', '').astype(int).to_numpy()
