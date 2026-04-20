@@ -791,8 +791,8 @@ def run_live_trader(settings: Settings | None = None) -> None:
 
         tqqq_df = intraday_bars[intraday_bars["symbol"] == "TQQQ"].copy()
         
-        # Need at least 15 bars to get a stable ATR / VWAP
-        if len(tqqq_df) < 15:
+        # Need at least 2 bars: 1 for signal + 1 to execute on next bar open
+        if len(tqqq_df) < 2:
             time.sleep(settings.runtime.quote_poll_seconds)
             continue
 
