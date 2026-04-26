@@ -54,3 +54,25 @@ python master_scheduler.py
 ```bash
 docker compose up -d --build
 ```
+
+## Qullamaggie型スイング・ブレイクアウト検証
+
+TQQQ/SQQQのVWAPライブボットはそのまま残しつつ、別CLIとして
+`industry composite + replacement` のスイング・ブレイクアウト検証レイヤーを
+追加しています。
+
+```bash
+python run_industry_replacement_backtest.py `
+  --standard-events C:/path/to/standard_events_with_outcomes.csv `
+  --tight-events C:/path/to/tight_reversal_events_with_outcomes.csv `
+  --daily C:/path/to/daily_history.parquet `
+  --universe C:/path/to/universe.parquet `
+  --outdir reports/industry_replacement_backtest
+```
+
+実装内容:
+
+- 5枠、1枠25%配分。
+- `leader_score >= 98`、leader score、出来高爆発、寄りからの推進力、Industry RS、setup sweet spot、小中型株ボーナス、standard breakoutボーナスで同日候補を順位付け。
+- 枠または現金が足りない場合のみ、A+候補が弱い既存ポジションを置き換え可能。
+- partial profit、DMA/hold_score劣化判定、50DMA disaster exit、段階的ATR trailing stopを含むsuper-winner runner exit。
