@@ -46,6 +46,39 @@ Set `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` to receive real-time webhook up
 python master_scheduler.py
 ```
 
+## Qullamaggie Swing Breakout Validation
+
+This repository also includes an optional research/backtest layer for the
+Qullamaggie-style `industry composite + replacement` swing breakout portfolio.
+It does not replace the live TQQQ/SQQQ VWAP bot by default; it is exposed as a
+separate validation CLI.
+
+The portfolio layer expects precomputed two-lane breakout event files
+(`standard_breakout` and `tight_reversal`) with 5-minute trigger fields, plus a
+long daily OHLCV history and an FMP-style universe file with industry and market
+cap metadata.
+
+```bash
+python run_industry_replacement_backtest.py \
+  --standard-events C:/path/to/standard_events_with_outcomes.csv \
+  --tight-events C:/path/to/tight_reversal_events_with_outcomes.csv \
+  --daily C:/path/to/daily_history.parquet \
+  --universe C:/path/to/universe.parquet \
+  --outdir reports/industry_replacement_backtest
+```
+
+Implemented portfolio behavior:
+
+- 5 slots, 25% allocation per slot.
+- Same-day ranking by `leader_score >= 98`, leader score, volume thrust, move
+  from open, Industry RS, setup sweet spot, small/mid-cap bonus, and standard
+  breakout bonus.
+- A+ replacement rule: if slots/cash are unavailable, an elite candidate may
+  replace a weaker existing position unless that position is already a strong
+  winner.
+- Super-winner runner exit with partial profit, DMA/hold-score degradation
+  rules, 50DMA disaster exit, and tiered ATR trailing stop.
+
 ## Docker Deployment
 
 ```bash

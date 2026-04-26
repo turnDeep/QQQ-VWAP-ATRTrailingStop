@@ -10,3 +10,4 @@ schedule
 scikit-learn
 pyarrow
 pytz
+matplotlib
